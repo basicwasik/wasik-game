@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>WASIK - Sci-Fi Racing Shooter</title>
+    <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #050510; color: #fff; font-family: 'Courier New', Courier, monospace; touch-action: none; }
+        #gameCanvas { display: none; width: 100vw; height: 100vh; }
+        #ui { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 10; background: radial-gradient(circle, #1a1a3a 0%, #000 100%); }
+        h1 { font-size: 3rem; text-shadow: 0 0 10px #0ff, 0 0 20px #0ff; margin-bottom: 20px; }
+        .btn { background: transparent; color: #0ff; border: 2px solid #0ff; padding: 15px 30px; font-size: 1.2rem; margin: 10px; cursor: pointer; border-radius: 5px; text-transform: uppercase; box-shadow: 0 0 10px #0ff inset, 0 0 10px #0ff; transition: 0.2s; }
+        .btn:active { background: #0ff; color: #000; }
+        input { padding: 10px; font-size: 1.2rem; text-align: center; border: 2px solid #f0f; background: #222; color: #fff; margin: 10px; border-radius: 5px; outline: none; }
+        #controls { display: none; position: absolute; bottom: 0; width: 100%; height: 40%; pointer-events: none; z-index: 5; }
+        #joystick-zone { position: absolute; left: 0; bottom: 0; width: 50%; height: 100%; pointer-events: auto; }
+        #shoot-btn { position: absolute; right: 20px; bottom: 40px; width: 80px; height: 80px; border-radius: 50%; background: rgba(255, 0, 255, 0.2); border: 2px solid #f0f; color: #f0f; font-weight: bold; font-size: 1rem; pointer-events: auto; box-shadow: 0 0 15px #f0f; }
+        #shoot-btn:active { background: rgba(255, 0, 255, 0.6); }
+        #game-overlay { position: absolute; top: 10px; left: 10px; font-size: 1rem; color: #fff; display: none; z-index: 5; text-shadow: 0 0 5px #fff; }
+        .highlight-cyan { color: #0ff; text-shadow: 0 0 5px #0ff; }
+        .highlight-magenta { color: #f0f; text-shadow: 0 0 5px #f0f; }
+        #win-screen { display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 3rem; text-align: center; z-index: 20; background: rgba(0,0,0,0.8); padding: 40px; border: 2px solid #fff; border-radius: 10px; }
+    </style>
+</head>
+<body>
+
+<div id="ui">
+    <h1>WASIK</h1>
+    <div id="menu">
+        <button class="btn" id="btn-host">Host Match</button>
+        <br><br>
+        <input type="text" id="join-code" placeholder="Enter Room Code">
+        <br>
+        <button class="btn" id="btn-join" style="border-color: #f0f; color: #f0f; box-shadow: 0 0 10px #f0f inset, 0 0 10px #f0f;">Join Match</button>
+    </div>
+    <div id="waiting" style="display:none;">
+        <h2>Waiting for friend...</h2>
+        <p>Share this code:</p>
+        <h1 id="display-code" class="highlight-magenta">...</h1>
+    </div>
+</div>
+
+<div id="game-overlay">
+    Room: <span id="small-code" style="font-weight:bold;"></span><br>
+    Race to the top finish line!
+</div>
+
+<div id="win-screen">
+    <span id="win-text"></span><br>
+    <button class="btn" onclick="location.reload()">Play Again</button>
+</div>
+
+<canvas id="gameCanvas"></canvas>
+
+<div id="controls">
+    <div id="joystick-zone"></div>
+    <button id="shoot-btn">FIRE</button>
+</div>
+
+<script>
+    const ui = document.getElementById('ui');
+    const menu = document.getElementById('menu');
+    const waiting = document.getElementById('waiting');
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const controls = document.getElementById('controls');
+    const winScreen = document.getElementById('win-screen');
+    
+    let peer = null;
+    let conn = null;
+    let isHost = false;
+    
+    function resizeCanvas() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    let player = { x: canvas.width/2 - 50, y: canvas.height - 100, color: '#0ff', projectiles: [], isWinner: false };
+    let otherPlayer = { x: canvas.width/2 + 50, y: canvas.height - 100, color: '#f0f', projectiles: [], isWinner: false };
+    let gameActive = false;
+
+    document.getElementById('btn-host').onclick = () => {
+        menu.style.display = 'none';
+        waiting.style.display = 'block';
+        let code = Math.random().toString(36).substring(2, 6).toUpperCase();
+        peer = new Peer('wasik-' + code);
+        
+        peer.on('open', (id) => {
+            document.getElementById('display-code').innerText = code;
+            document.getElementById('small-code').innerText = code;
+        });
+        peer.on('connection', (c) => {
+            conn = c;
+            setupConnection();
+        });
+        isHost = true;
+    };
+
+    document.getElementById('btn-join').onclick = () => {
+        let code = document.getElementById('join-code').value.toUpperCase();
+        if(!code) return alert("Enter a code!");
+        peer = new Peer();
+        peer.on('open', (id) => {
+            conn = peer.connect('wasik-' + code);
+            setupConnection();
+            document.getElementById('small-code').innerText = code;
+        });
+    };
+
+    function setupConnection() {
+        conn.on('open', () => { startGame(); });
+        conn.on('data', (data) => {
+            if(data.type === 'update') {
+                otherPlayer.x = data.x;
+                otherPlayer.y = data.y;
+                otherPlayer.projectiles = data.projectiles;
+            }
+            if(data.type === 'win') {
+                endGame(otherPlayer.color);
+            }
+        });
+    }
+
+    function startGame() {
+        ui.style.display = 'none';
+        canvas.style.display = 'block';
+        controls.style.display = 'block';
+        document.getElementById('game-overlay').style.display = 'block';
+        gameActive = true;
+        
+        if(isHost) {
+            player.color = '#0ff'; otherPlayer.color = '#f0f';
+            player.x = canvas.width/2 - 40;
+        } else {
+            player.color = '#f0f'; otherPlayer.color = '#0ff';
+            player.x = canvas.width/2 + 40;
+        }
+        requestAnimationFrame(gameLoop);
+    }
+
+    // Touch Controls
+    let joyActive = false;
+    let targetX = player.x;
+    let targetY = player.y;
+
+    document.getElementById('joystick-zone').addEventListener('touchstart', e => { joyActive = true; updateJoy(e); });
+    document.getElementById('joystick-zone').addEventListener('touchmove', e => { if(joyActive) updateJoy(e); });
+    document.getElementById('joystick-zone').addEventListener('touchend', () => { joyActive = false; });
+    
+    function updateJoy(e) {
+        let touch = e.touches[0];
+        let rect = document.getElementById('joystick-zone').getBoundingClientRect();
+        let centerX = rect.width / 2;
+        let centerY = window.innerHeight - (rect.height / 2);
+        let dx = touch.clientX - centerX;
+        let dy = touch.clientY - centerY;
+        targetX = player.x + (dx * 0.1);
+        targetY = player.y + (dy * 0.1);
+    }
+
+    document.getElementById('shoot-btn').addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        player.projectiles.push({x: player.x, y: player.y - 20});
+    });
+
+    function endGame(winnerColor) {
+        gameActive = false;
+        controls.style.display = 'none';
+        winScreen.style.display = 'block';
+        let winText = document.getElementById('win-text');
+        winText.style.color = winnerColor;
+        winText.style.textShadow = `0 0 10px ${winnerColor}`;
+        winText.innerText = (winnerColor === player.color) ? "YOU WIN!" : "OPPONENT WINS!";
+    }
+
+    function gameLoop() {
+        if(!gameActive) return;
+
+        // Background
+        ctx.fillStyle = '#050510';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // Grid
+        ctx.strokeStyle = '#1a1a3a';
+        ctx.lineWidth = 1;
+        for(let i=0; i<canvas.width; i+=40) { ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, canvas.height); ctx.stroke(); }
+        for(let i=0; i<canvas.height; i+=40) { ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(canvas.width, i); ctx.stroke(); }
+
+        // Finish Line
+        const finishY = 100;
+        ctx.fillStyle = '#fff';
+        ctx.shadowBlur = 10; ctx.shadowColor = '#fff';
+        ctx.fillRect(0, finishY - 5, canvas.width, 10);
+        ctx.shadowBlur = 0;
+
+        // Smooth Movement
+        if(joyActive) {
+            player.x += (targetX - player.x) * 0.2;
+            player.y += (targetY - player.y) * 0.2;
+        }
+
+        // Bounds checking
+        player.x = Math.max(15, Math.min(canvas.width - 15, player.x));
+        player.y = Math.max(15, Math.min(canvas.height - 15, player.y));
+
+        // Update & Draw Player Projectiles
+        ctx.fillStyle = player.color;
+        ctx.shadowBlur = 10; ctx.shadowColor = player.color;
+        for(let i = player.projectiles.length - 1; i >= 0; i--) {
+            let p = player.projectiles[i];
+            p.y -= 10;
+            ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, Math.PI*2); ctx.fill();
+            if(p.y < 0) player.projectiles.splice(i, 1);
+        }
+
+        // Draw Other Player Projectiles
+        ctx.fillStyle = otherPlayer.color;
+        ctx.shadowBlur = 10; ctx.shadowColor = otherPlayer.color;
+        for(let p of otherPlayer.projectiles) {
+            ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, Math.PI*2); ctx.fill();
+        }
+
+        // Draw Other Player
+        ctx.fillStyle = otherPlayer.color;
+        ctx.shadowBlur = 15; ctx.shadowColor = otherPlayer.color;
+        ctx.beginPath(); ctx.moveTo(otherPlayer.x, otherPlayer.y - 15); ctx.lineTo(otherPlayer.x - 10, otherPlayer.y + 15); ctx.lineTo(otherPlayer.x + 10, otherPlayer.y + 15); ctx.fill();
+
+        // Draw Player
+        ctx.fillStyle = player.color;
+        ctx.shadowBlur = 15; ctx.shadowColor = player.color;
+        ctx.beginPath(); ctx.moveTo(player.x, player.y - 15); ctx.lineTo(player.x - 10, player.y + 15); ctx.lineTo(player.x + 10, player.y + 15); ctx.fill();
+
+        ctx.shadowBlur = 0;
+
+        // Win Condition Check
+        if(player.y <= finishY) {
+            if(conn && conn.open) conn.send({type: 'win'});
+            endGame(player.color);
+        }
+
+        // Sync Data
+        if(conn && conn.open && gameActive) {
+            conn.send({type: 'update', x: player.x, y: player.y, projectiles: player.projectiles});
+        }
+
+        requestAnimationFrame(gameLoop);
+    }
+</script>
+</body>
+</html>
